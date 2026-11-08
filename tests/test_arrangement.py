@@ -80,6 +80,50 @@ def test_track_icon(tracks: tuple[Track, ...]):
         assert track.icon == 70 if track.name == "Iconified" else not track.icon
 
 
+def test_height_percent_keeps_stored_float():
+    import struct
+
+    import construct as c
+
+    from pyflp.arrangement import HeightAdapter
+
+    raw = bytes.fromhex("2fba883f")  # about 1.06818, which displays as 106%
+    adapter = HeightAdapter(c.Float32l)
+    assert adapter.parse(raw) == "106%"
+    assert adapter.build(adapter.parse(raw)) == raw
+    assert adapter.build("50%") == struct.pack("<f", 0.5)
+
+
+def test_automation_playlist_window_maps_beats(project):
+    from pyflp.arrangement import (
+        automation_playlist_window,
+        automation_point_timeline_beats,
+    )
+    from pyflp.channel import Automation
+
+    found = None
+    for arrangement in project.arrangements:
+        for track in arrangement.tracks:
+            for item in track:
+                if isinstance(item, ChannelPLItem) and isinstance(item.channel, Automation):
+                    found = item
+                    break
+            if found is not None:
+                break
+        if found is not None:
+            break
+
+    assert found is not None
+    assert found.offsets == (-1.0, -1.0)
+    start, end = automation_playlist_window(found)
+    assert start == 0.0
+    assert end == pytest.approx(16.0)
+    assert found.length == 1536
+    points = list(found.channel)
+    assert automation_point_timeline_beats(found, points[0], project.ppq) == pytest.approx(0.0)
+    assert automation_point_timeline_beats(found, points[1], project.ppq) == pytest.approx(8.0)
+
+
 def test_track_items(tracks: tuple[Track, ...]):
     for track in tracks:
         num_items = 0

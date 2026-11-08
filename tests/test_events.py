@@ -19,6 +19,32 @@ def test_invalid_chunk_size():
         U8Event(EventEnum(0), b"12")
 
 
+def test_eventenum_lookup_on_empty_base():
+    """Regression: EventEnum has no members, but EventEnum(id) must resolve.
+
+    Python 3.11.9+ and 3.12+ raise TypeError from enum before _missing_ runs.
+    """
+    import pyflp
+    from pyflp.channel import ChannelID
+    from pyflp.project import ProjectID
+
+    assert pyflp  # importing the package registers every EventEnum subclass
+    assert EventEnum(21) is ChannelID.Type
+    assert EventEnum(ChannelID.Type) is ChannelID.Type
+    assert EventEnum(ProjectID.FLVersion) is ProjectID.FLVersion
+
+    used = {int(member) for sub in EventEnum.__subclasses__() for member in sub}
+    free = next(i for i in range(255, -1, -1) if i not in used)
+    pseudo = EventEnum(free)
+    assert int(pseudo) == free
+    assert EventEnum(free) is pseudo
+
+    with pytest.raises(ValueError):
+        EventEnum(256)
+    with pytest.raises(ValueError):
+        EventEnum(-1)
+
+
 def test_event_tree():
     root = EventTree()
     child = EventTree(root)

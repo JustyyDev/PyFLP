@@ -59,6 +59,33 @@ class _EventEnumMeta(enum.EnumMeta):
         """
         return obj in tuple(self)
 
+    def __call__(cls, value: object, *args: object, **kwds: object) -> Any:
+        """Look up ``value`` when ``cls`` itself has no members.
+
+        ``EventEnum`` is an empty base. Concrete IDs live on subclasses such as
+        ``ChannelID`` and ``ProjectID``, and ``EventEnum(raw_id)`` is expected
+        to resolve through :meth:`EventEnum._missing_`. Python 3.11.9 and
+        3.12+ raise ``TypeError`` from ``enum.EnumMeta.__call__`` (or
+        ``Enum.__new__``) before ``_missing_`` runs when the enum has no
+        members. That broke :func:`pyflp.parse` (upstream issue 183).
+
+        Only the zero-argument integer lookup on an empty enum is redirected.
+        Name construction and lookups on subclasses that define members stay
+        on the normal enum path.
+        """
+        if (
+            not args
+            and not kwds
+            and len(cls) == 0
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ):
+            member = cls._missing_(value)  # type: ignore[attr-defined]
+            if member is None:
+                raise ValueError(f"{value!r} is not a valid {cls.__qualname__}")
+            return member
+        return super().__call__(value, *args, **kwds)  # type: ignore[call-overload]
+
 
 class EventEnum(int, enum.Enum, metaclass=_EventEnumMeta):
     """IDs used by events.

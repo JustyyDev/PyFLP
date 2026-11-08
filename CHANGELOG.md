@@ -8,6 +8,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `pyflp.parse` on Python 3.11.9, 3.12 and 3.13. Empty `EventEnum` lookup now
+  reaches `_missing_` instead of raising `TypeError` (upstream issue 183).
+- Saving a project no longer nudges the time-stretch multiplier by one count,
+  or rewrites a playlist track height float that displayed as the same percent.
+
+### Added
+
+- Automation point curve mode, selection marker and tension sign. The four
+  bytes that were previously opaque are decoded in place and serialised back
+  unchanged. Point `value` stays the stored 0..1 clip value.
+- `Automation.minimum` and `Automation.maximum`, the Min/Max knob integers.
+  `automation_tempo_bpm` maps those integers through FL's 10..522 BPM range.
+  Mix, volume and pitch clips are not passed through that BPM formula.
+- Playlist helpers `automation_playlist_window` and
+  `automation_point_timeline_beats`. A stretched clip returns no guessed time.
+- Remote-controller fields `automation_channel`, `target_id` and
+  `destination_id`, read from the existing 20-byte record without rewriting it.
+
 ## [2.2.1] - 2023-06-05
 
 ### Fixed

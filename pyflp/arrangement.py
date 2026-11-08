@@ -45,7 +45,7 @@ from pyflp._models import (
     ModelReprMixin,
     supports_slice,
 )
-from pyflp.channel import Channel, ChannelRack
+from pyflp.channel import Automation, AutomationPoint, Channel, ChannelRack
 from pyflp.exceptions import ModelNotFound, NoModelsFound, PropertyCannotBeSet
 from pyflp.pattern import Pattern, Patterns
 from pyflp.timemarker import TimeMarker, TimeMarkerID
@@ -60,6 +60,8 @@ __all__ = [
     "TrackSync",
     "ChannelPLItem",
     "PatternPLItem",
+    "automation_playlist_window",
+    "automation_point_timeline_beats",
 ]
 
 
@@ -120,11 +122,21 @@ class TrackSync(ct.EnumBase):
     Auto = 6
 
 
+class _HeightPercent(str):
+    """Percentage text that still remembers the float FL stored."""
+
+    raw: float
+
+
 class HeightAdapter(ct.Adapter[float, float, str, str]):
     def _decode(self, obj: float, *_: Any) -> str:
-        return str(int(obj * 100)) + "%"
+        text = _HeightPercent(str(int(obj * 100)) + "%")
+        text.raw = obj
+        return text
 
     def _encode(self, obj: str, *_: Any) -> float:
+        if isinstance(obj, _HeightPercent) and str(int(obj.raw * 100)) + "%" == obj:
+            return obj.raw
         return int(obj[:-1]) / 100
 
 
@@ -213,6 +225,53 @@ class ChannelPLItem(PLItemBase, ModelReprMixin):
     def channel(self, channel: Channel) -> None:
         self._kw["channel"] = channel
         self["item_index"] = channel.iid
+
+
+def automation_playlist_window(item: ChannelPLItem) -> tuple[float, float] | None:
+    """Clip-local beat window covered by one playlist item.
+
+    Stored ``offsets`` of anything other than ``(-1, -1)`` are that window.
+    ``(-1, -1)`` is the marker FL writes when the item is left untrimmed. For
+    an automation clip that marker means beat 0 through the last point. The
+    playlist ``length`` of such items matches that span in beats (ticks / PPQ).
+
+    Returns ``None`` when ``item`` is not an automation clip.
+    """
+    if not isinstance(item.channel, Automation):
+        return None
+
+    start, end = item.offsets
+    if start == -1.0 and end == -1.0:
+        points = list(item.channel)
+        if not points:
+            return (0.0, 0.0)
+        last = cast(Optional[float], points[-1].position)
+        return (0.0, float(last or 0.0))
+    return (float(start), float(end))
+
+
+def automation_point_timeline_beats(
+    item: ChannelPLItem, point: AutomationPoint, ppq: int
+) -> float | None:
+    """Timeline beat of ``point`` when the playlist item is not time-stretched.
+
+    ``point.position`` is local to the clip, in beats. The playlist item starts
+    at ``position / ppq`` beats and shows :func:`automation_playlist_window`.
+    When that window's length in ticks matches the item length (1 tick of
+    tolerance), local beats map 1:1 onto the timeline. A stretched clip returns
+    ``None`` instead of a guessed time.
+    """
+    window = automation_playlist_window(item)
+    local = cast(Optional[float], point.position)
+    if window is None or ppq <= 0 or local is None:
+        return None
+
+    start, end = window
+    length = cast(int, item.length)
+    origin = cast(int, item.position)
+    if abs((end - start) * ppq - length) > 1.0:
+        return None
+    return origin / ppq + (local - start)
 
 
 class PatternPLItem(PLItemBase, ModelReprMixin):

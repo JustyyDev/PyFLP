@@ -49,6 +49,7 @@ __all__ = [
     "ArpDirection",
     "Automation",
     "AutomationPoint",
+    "automation_tempo_bpm",
     "Channel",
     "Instrument",
     "Layer",
@@ -112,7 +113,13 @@ class AutomationEvent(StructEventBase):
                 ),
                 "value" / c.Float64l,
                 "tension" / c.Float32l,
-                "_u1" / c.Bytes(4),  # Linked to tension
+                # These four bytes used to be stored opaquely. They are split
+                # so the curve mode can be read, and they rebuild to the same
+                # bytes. tension_mode is FL's curve-type code; this parser does
+                # not translate that code into a UI name.
+                "tension_mode" / c.Int16ul,
+                "selected" / c.Int8ul,
+                "tension_sign" / c.Int8sl,
             ),  # 24 per struct
         ),
         "_u6" / c.GreedyBytes,  # TODO Upto a whooping 112 bytes
@@ -1155,17 +1162,58 @@ class AutomationPoint(ItemModel[AutomationEvent], ModelReprMixin):
         self._item[prop] = value
         self._parent["points"][self._index] = self._item
 
-    position = StructProp[int](readonly=True)
-    """PPQ dependant. Position on X-axis.
+    position = StructProp[float](readonly=True)
+    """Local position on the clip, in beats.
+
+    Sum of the float64 deltas stored with each point, measured from the start
+    of the automation clip. Not a PPQ tick count and not a scaled parameter.
+    Playlist placement is separate: see :class:`pyflp.arrangement.ChannelPLItem`.
 
     This property cannot be set as of yet.
     """
 
+    selected = StructProp[int]()
+    """Selection marker byte stored beside the curve mode.
+
+    Preserved as stored. Do not assume it is only 0 or 1.
+    """
+
     tension = StructProp[float]()
-    """A value in the range of 0 to 1.0."""
+    """Curve amount stored as a float32, in FL's own tension units.
+
+    This is not a normalised 0..1 parameter value. The sign byte beside it is
+    :attr:`tension_sign`. No conversion to a plugin or BPM unit is applied.
+    """
+
+    tension_mode = StructProp[int]()
+    """Curve-type code stored as a uint16.
+
+    FL's point menu calls these modes Single curve, Double curve, Hold, Stairs
+    and others. The file stores a number, not that label. Unknown codes are
+    returned unchanged and are written back unchanged.
+    """
+
+    tension_sign = StructProp[int]()
+    """Sign byte stored beside :attr:`tension`.
+
+    On the bundled automation presets and on a FL 21 project checked against
+    this decoder, the byte follows the tension float:
+
+    * ``0`` on the first point, whose tension is ``0`` (no curve leads into it)
+    * ``2`` on a later point whose tension is ``0``
+    * ``1`` when tension is positive
+    * ``-1`` when tension is negative
+
+    The float remains the curve amount. This byte is preserved either way.
+    """
 
     value = StructProp[float]()
-    """Position on Y-axis in the range of 0 to 1.0."""
+    """Normalised height of the point, as stored (float64).
+
+    FL's "Type in value" command edits this in the range 0 to 1. It is the
+    clip display value. The channel Min and Max knobs scale it onto a target
+    such as BPM or a plugin parameter. This property does not apply that scale.
+    """
 
 
 class Channel(EventModel):
@@ -1330,6 +1378,57 @@ class Automation(Channel, ModelCollection[AutomationPoint]):
                 yield AutomationPoint(point, i, event)
 
     lfo = NestedProp(AutomationLFO, ChannelID.Automation)  # TODO Add image
+
+    @property
+    def minimum(self) -> int | None:
+        """Min knob integer from the leading int32 of ``ChannelID.Levels``.
+
+        FL reuses that levels field for an automation clip's Min knob. The
+        integer is on FL's level-knob scale (0 to 12800 on a full-range clip).
+        It is not a BPM value and not a plugin unit. See
+        :func:`automation_tempo_bpm` for the separate tempo-knob mapping.
+        """
+        if ChannelID.Levels in self.events.ids:
+            return cast(LevelsEvent, self.events.first(ChannelID.Levels))["pan"]
+        return None
+
+    @property
+    def maximum(self) -> int | None:
+        """Max knob integer from the second int32 of ``ChannelID.Levels``.
+
+        Same scale and limits as :attr:`minimum`.
+        """
+        if ChannelID.Levels in self.events.ids:
+            return cast(LevelsEvent, self.events.first(ChannelID.Levels))["volume"]
+        return None
+
+
+# FL Studio 11+ stores project tempo from 10 to 522 BPM. Automation Min/Max
+# knobs are integers on the same 0..12800 scale as other level knobs.
+_TEMPO_FLOOR = 10.0
+_TEMPO_CEILING = 522.0
+_KNOB_SCALE = 12800
+
+
+def automation_tempo_bpm(normalized: float, minimum: int, maximum: int) -> float:
+    """Map a tempo clip's normalised point through its Min/Max knob integers.
+
+    ``normalized`` is :attr:`AutomationPoint.value` (0 to 1 on the clip).
+    ``minimum`` and ``maximum`` are :attr:`Automation.minimum` and
+    :attr:`Automation.maximum`. The knob span maps linearly onto FL's tempo
+    range of 10 to 522 BPM:
+
+        bpm_min = 10 + (minimum / 12800) * (522 - 10)
+        bpm_max = 10 + (maximum / 12800) * (522 - 10)
+        bpm = bpm_min + normalized * (bpm_max - bpm_min)
+
+    Use this only for a clip linked to project tempo. Mix, volume and pitch
+    clips share the knob integers but not this BPM range.
+    """
+    span = _TEMPO_CEILING - _TEMPO_FLOOR
+    bpm_min = _TEMPO_FLOOR + (minimum / _KNOB_SCALE) * span
+    bpm_max = _TEMPO_FLOOR + (maximum / _KNOB_SCALE) * span
+    return bpm_min + normalized * (bpm_max - bpm_min)
 
 
 class Layer(Channel, ModelCollection[Channel]):
