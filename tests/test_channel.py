@@ -3,6 +3,8 @@ from __future__ import annotations
 import pathlib
 from typing import TypeVar
 
+import pytest
+
 from pyflp._events import RGBA
 from pyflp.channel import (
     Automation,
@@ -63,9 +65,91 @@ def test_automation_lfo():
     assert lfo.amount == 64
 
 
+def test_stretch_multiplier_integer_roundtrip():
+    import struct
+
+    import construct as c
+
+    from pyflp._adapters import Log2
+
+    adapter = Log2(c.Int32sl, 10000)
+    for raw in (1, -3200, -3199, 0, 10000, -20000):
+        blob = struct.pack("<i", raw)
+        assert adapter.build(adapter.parse(blob)) == blob
+
+
+def test_automation_tempo_knob_mapping():
+    import struct
+
+    from pyflp.channel import automation_tempo_bpm
+
+    value_158 = struct.unpack("<f", struct.pack("<f", 49 / 60))[0]
+    value_130 = struct.unpack("<f", struct.pack("<f", 7 / 12))[0]
+    # Min 1250 and max 4250 on the 0..12800 knob scale map to 60 and 180 BPM.
+    assert automation_tempo_bpm(value_158, 1250, 4250) == pytest.approx(158.0)
+    assert automation_tempo_bpm(0.5, 1250, 4250) == pytest.approx(120.0)
+    assert automation_tempo_bpm(value_130, 1250, 4250) == pytest.approx(130.0)
+
+
+def test_automation_minimum_maximum(project: Project):
+    from pyflp.channel import Automation
+
+    clips = [channel for channel in project.channels if isinstance(channel, Automation)]
+    assert clips
+    assert clips[0].minimum == 0
+    assert clips[0].maximum == 12800
+
+
 def test_automation_points():
     points = [point for point in load_automation("automation-points.fst")]
     assert [int(p.position or 0) for p in points] == [0, 8, 8, 16, 24, 32]
+    assert [p.tension_sign for p in points] == [0, 2, 2, 2, 1, 1]
+    for point in points:
+        assert isinstance(point.value, float)
+        assert isinstance(point.tension, float)
+        assert isinstance(point.tension_mode, int)
+        assert isinstance(point.selected, int)
+        assert isinstance(point.tension_sign, int)
+
+
+def test_automation_point_curve_bytes_roundtrip():
+    """The 4 curve bytes stay intact, including values this decoder does not name."""
+    import struct
+
+    from pyflp._events import IndexedEvent, EventTree
+    from pyflp.channel import Automation, AutomationEvent, ChannelID
+
+    header = struct.pack("<ii", 1, 64) + b"\x01" + b"\x00" * 8
+    points = [
+        (0.0, 0.0, 0.0, 0, 0, 2),
+        (4.0, 1.0, -0.5, 2, 1, 1),
+        (4.0, 0.25, 0.5, 99, 7, -1),  # mode 99 is intentionally unnamed
+    ]
+    blob = header + struct.pack("<I", len(points))
+    for delta, value, tension, mode, selected, sign in points:
+        blob += struct.pack("<ddfHBb", delta, value, tension, mode, selected, sign)
+    trailer = bytes(range(20))
+    payload = blob + trailer
+
+    event = AutomationEvent(ChannelID.Automation, payload)
+    assert event.STRUCT.build(event.value) == payload
+
+    auto = Automation(EventTree(init=[IndexedEvent(0, event)]))
+    decoded = list(auto)
+    assert [p.position for p in decoded] == [0.0, 4.0, 8.0]
+    assert [p.value for p in decoded] == [0.0, 1.0, 0.25]
+    assert [p.tension for p in decoded] == [0.0, -0.5, 0.5]
+    assert [p.tension_mode for p in decoded] == [0, 2, 99]
+    assert [p.selected for p in decoded] == [0, 1, 7]
+    assert [p.tension_sign for p in decoded] == [2, 1, -1]
+
+    decoded[2].tension_mode = 3
+    rebuilt = event.STRUCT.build(event.value)
+    assert rebuilt != payload
+    assert rebuilt[: len(payload) - len(trailer)] != payload[: len(payload) - len(trailer)]
+    assert rebuilt[-len(trailer) :] == trailer
+    again = AutomationEvent(ChannelID.Automation, rebuilt)
+    assert list(Automation(EventTree(init=[IndexedEvent(0, again)])))[2].tension_mode == 3
 
 
 def test_channel_color():

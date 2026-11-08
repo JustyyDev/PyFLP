@@ -59,7 +59,17 @@ class Log2(SimpleAdapter[int, float]):
         self.factor = factor
 
     def _encode(self, obj: float, *_: Any) -> int:
-        return int(self.factor * math.log2(obj))
+        # int() truncates, so a value just decoded from ``n`` can encode as
+        # ``n - 1``. Prefer the integer whose decode matches ``obj``.
+        guess = int(self.factor * math.log2(obj))
+        best = guess
+        best_err = abs(self._decode(best) - obj)
+        for candidate in (guess - 1, guess + 1):
+            err = abs(self._decode(candidate) - obj)
+            if err < best_err:
+                best = candidate
+                best_err = err
+        return best
 
     def _decode(self, obj: int, *_: Any) -> float:
         return 2 ** (obj / self.factor)
